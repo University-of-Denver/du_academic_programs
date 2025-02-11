@@ -1,0 +1,5 @@
+services:
+  du_academic_programs_unit.redirectadmissionsteps:
+    class: Drupal\du_academic_programs_unit\EventSubscriber\AdmissionStepsRedirectSubscriber
+    tags:
+      - { name: event_subscriber }

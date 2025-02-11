@@ -1,0 +1,7 @@
+du_academic_programs.admin_settings:
+  path: /admin/config/du_academic_programs
+  defaults:
+    _form: '\Drupal\du_academic_programs\Form\ModuleConfigurationForm'
+    _title: 'Academic Programs Configuration'
+  requirements:
+    _permission: 'administer site configuration'

@@ -1,0 +1,184 @@
+<?php
+
+/**
+ * @file
+ * Description.
+ */
+
+use Drupal\Core\Form\FormStateInterface;
+use Drupal\node\Entity\Node;
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
+function du_academic_programs_unit_form_system_site_information_settings_alter(&$form, FormStateInterface $form_state, $form_id) {
+
+  // Note: This can probably be removed in the future as part of clean up. No
+  // longer in Use.
+  $config = \Drupal::config('du_academic_programs_unit.settings');
+  $form['academic_programs'] = [
+    '#type' => 'details',
+    '#title' => t('Academic Programs'),
+    '#open' => TRUE,
+  ];
+  $form['academic_programs']['academic_programs_list_location'] = [
+    '#type' => 'entity_autocomplete',
+    '#target_type' => 'node',
+    '#title' => t('Undergraduate Academic Programs List Location'),
+    '#description' => t('URL to Undergraduate Academic Programs List. "Back to Academic Program" Link defaults to this field if Graduate Academic Program List Location is not present.'),
+  ];
+  if (!empty($config->get('academic_programs_list_location'))) {
+    $value = Node::load((int) $config->get('academic_programs_list_location'));
+    if (!empty($value)) {
+      $form['academic_programs']['academic_programs_list_location']['#default_value'] = $value;
+    }
+  }
+  $form['academic_programs']['academic_programs_list_location_ga'] = [
+    '#type' => 'entity_autocomplete',
+    '#target_type' => 'node',
+    '#title' => t('Graduate Academic Programs List Location'),
+    '#description' => t('URL to Graduate Academic Programs List.'),
+  ];
+  if (!empty($config->get('academic_programs_list_location_ga'))) {
+    $value = Node::load((int) $config->get('academic_programs_list_location_ga'));
+    if (!empty($value)) {
+      $form['academic_programs']['academic_programs_list_location_ga']['#default_value'] = $value;
+    }
+  }
+  $form['academic_programs']['academic_programs_list_location_concentration'] = [
+    '#type' => 'entity_autocomplete',
+    '#target_type' => 'node',
+    '#title' => t('Concentration Academic Programs List Location'),
+    '#description' => t('URL to Concentration Academic Programs List.'),
+  ];
+  if (!empty($config->get('academic_programs_list_location_concentration'))) {
+    $value = Node::load((int) $config->get('academic_programs_list_location_concentration'));
+    if (!empty($value)) {
+      $form['academic_programs']['academic_programs_list_location_concentration']['#default_value'] = $value;
+    }
+  }
+  $form['academic_programs']['academic_programs_list_location_ensemble'] = [
+    '#type' => 'entity_autocomplete',
+    '#target_type' => 'node',
+    '#title' => t('Ensemble Academic Programs List Location'),
+    '#description' => t('URL to Ensemble Academic Programs List.'),
+  ];
+  if (!empty($config->get('academic_programs_list_location_ensemble'))) {
+    $value = Node::load((int) $config->get('academic_programs_list_location_ensemble'));
+    if (!empty($value)) {
+      $form['academic_programs']['academic_programs_list_location_ensemble']['#default_value'] = $value;
+    }
+  }
+  $form['#submit'][] = 'du_academic_programs_unit_site_information_settings_form_submit';
+
+}
+
+/**
+ * Custom form submission handler for site information form.
+ */
+function du_academic_programs_unit_site_information_settings_form_submit(array &$form, FormStateInterface $form_state) {
+  $values = $form_state->getValues();
+
+  $config = \Drupal::configFactory()->getEditable('du_academic_programs_unit.settings');
+  $config
+    ->set('academic_programs_list_location', $values['academic_programs_list_location'])
+    ->set('academic_programs_list_location_ga', $values['academic_programs_list_location_ga'])
+    ->set('academic_programs_list_location_concentration', $values['academic_programs_list_location_concentration'])
+    ->set('academic_programs_list_location_ensemble', $values['academic_programs_list_location_ensemble'])
+    ->save();
+}
+
+/**
+ * Implements hook_preprocess_page().
+ */
+function du_academic_programs_unit_preprocess_page(&$variables) {
+  $settings = \Drupal::config('du_academic_programs_unit.settings');
+  if (isset($variables['node']) && is_object($variables['node'])) {
+    $node = $variables['node'];
+    $node_type = $node->bundle();
+    if (isset($node_type) && ($node_type == 'academic_program') || ($node_type == 'local_program')) {
+      _set_hero_items($variables);
+      $variables['hero_title'] = TRUE;
+      $variables['headline']['title'] = $node->title->value;
+      $variables['headline']['type'] = 'h2';
+      if (!empty($node->get('field_program_hero_image')->entity)) {
+        $image = $node->get('field_program_hero_image')->entity;
+        if (!empty($image)) {
+          $image_url = Drupal::service('file_url_generator')->generateAbsoluteString($image->get('uri')->getString());
+          $variables['hero_url'] = $image_url;
+          $variables['hero_alt'] = $node->field_program_hero_image->alt;
+        }
+      }
+      if (!empty($node->get('field_program_degree_type')->entity)) {
+        $entity = $node->get('field_program_degree_type')->entity;
+        $fieldName = 'field_degree_types_abreviation';
+        if (isset($entity) && !empty($entity->get($fieldName))) {
+          $variables['hero_degree_type'] = $entity->get($fieldName)->value;
+        }
+      }
+      if (!empty($node->get('field_program_department_code')->entity)) {
+        $entity = $node->get('field_program_department_code')->entity;
+        if (isset($entity) && !empty($entity->get('name'))) {
+          $variables['hero_department_code'] = $entity->get('name')->value;
+        }
+      }
+      $variables['hide_hero_caption'] = TRUE;
+      $variables['hero_background'] = TRUE;
+    }
+  }
+}
+
+/**
+ * Using generic preprocess node for both Local and Academic Programs.
+ */
+function du_academic_programs_unit_preprocess_node(&$variables) {
+  $view_mode = $variables['view_mode'];
+  if (($variables['node']->bundle() == "local_program" && $view_mode == "full") || ($variables['node']->bundle() == "academic_program" && $view_mode == "full")) {
+    $variables['#attached']['library'][] = 'du_academic_programs_unit/academic-programs';
+  }
+}
+
+/**
+ * Set the items for the Hero Section in the Academic Program.
+ */
+function _set_hero_items(&$variables) {
+  $variables['hero_items'] = [];
+  $fields = [
+    'school_name' => [
+      'label' => 'College',
+      'field' => 'field_schools_banner_code',
+    ],
+    'department_code' => [
+      'label' => 'Department',
+      'field' => 'field_unit_abbreviation',
+    ],
+    'degree_level' => [],
+    'degree_type' => [],
+  ];
+  foreach ($fields as $name => $info) {
+    $fieldName = 'field_program_' . $name;
+    if (isset($info['label'])) {
+      $fieldNameHide = 'field_program_hide_' . strtolower($info['label']);
+    }
+    else {
+      $fieldNameHide = 'field_program_hide_' . $name;
+    }
+    if (isset($variables['node']->{$fieldName})) {
+      $entity = $variables['node']->{$fieldName}->entity;
+      $entityField = isset($info['field']) ? $info['field'] : 'name';
+      if (isset($entity) && !empty($entity->get($entityField)->value)) {
+        $item = ['value' => $entity->get($entityField)->value];
+        if (isset($info['label'])) {
+          $item['label'] = $info['label'];
+        }
+        if (isset($variables['node']->{$fieldNameHide})) {
+          $value = $variables['node']->{$fieldNameHide}->value;
+          if (!empty($value)) {
+            $item['hide'] = $value;
+          }
+        }
+        $variables['hero_items'][] = $item;
+      }
+    }
+  }
+}

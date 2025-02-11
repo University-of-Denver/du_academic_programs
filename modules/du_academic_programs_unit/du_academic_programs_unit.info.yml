@@ -1,0 +1,6 @@
+name: DU Academic Programs Unit
+description: Academic Programs Unit functionality
+type: module
+package: "DU Custom"
+core_version_requirement: ^8 || ^9 || ^10
+dependencies:

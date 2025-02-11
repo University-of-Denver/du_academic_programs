@@ -1,0 +1,4 @@
+academic-programs:
+  version: 1.x
+  js:
+     js/academic-programs.js: {}

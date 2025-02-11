@@ -1,0 +1,11 @@
+{
+  "name":             "university-of-denver/du_academic_programs",
+  "description":      "Package of Academic Program Related Features",
+  "keywords":         ["University of Denver", "drupal"],
+  "homepage":         "http://www.du.edu",
+  "license":          "GPL-2.0+",
+  "type":             "drupal-module",
+  "extra": {
+      "_README": "DU Academic Program package"
+  }
+}

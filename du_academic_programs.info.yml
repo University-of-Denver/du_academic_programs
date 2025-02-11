@@ -1,0 +1,8 @@
+name: DU Academic Programs
+description: Academic Programs functionality
+type: module
+package: 'University of Denver'
+core_version_requirement: ^8 || ^9 || ^10
+configure: du_academic_programs.admin_settings
+dependencies:
+ - cms_content_sync

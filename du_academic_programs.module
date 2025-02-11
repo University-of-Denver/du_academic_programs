@@ -1,0 +1,508 @@
+<?php
+
+/**
+ * @file
+ * Description.
+ */
+
+use Drupal\node\Entity\Node;
+use Drupal\node\NodeInterface;
+use Drupal\views\Plugin\views\cache\CachePluginBase;
+use Drupal\views\Plugin\views\query\QueryPluginBase;
+use Drupal\views\ViewExecutable;
+use Drupal\Core\Datetime\DrupalDateTime;
+use Drupal\Core\Render\Element;
+use Drupal\Core\Url;
+use Drupal\Taxonomy\Entity\Term;
+use Drupal\Core\Form\FormStateInterface;
+
+/**
+ * Implements hook_preprocess_HOOK().
+ */
+function du_academic_programs_preprocess_paragraph__academic_programs(&$variables) {
+  // Set degree level term ID as a contextual arg.
+  $level = 'all';
+  if (!empty($variables['content']['field_program_filter_level'][0]['#taxonomy_term'])) {
+    $level = $variables['content']['field_program_filter_level'][0]['#taxonomy_term']->id();
+  }
+
+  $unit = 'all';
+  if (!empty($variables['content']['field_unit'][0]['#taxonomy_term'])) {
+    $unit = $variables['content']['field_unit'][0]['#taxonomy_term']->id();
+  }
+
+  // Set search param as a contextual argument. This doesn't do anything, but
+  // will bust the cache depending on the query.
+  $search = \Drupal::request()->query->get('search') ?? '';
+  $variables['custom']['programs'] = [
+    'view' => [
+      '#type' => 'view',
+      '#name' => 'academic_programs',
+      '#display_id' => 'default',
+      '#arguments' => [$level, $unit, $unit, $search],
+    ],
+  ];
+
+  // Populate list of available school filters.
+  $school_terms = \Drupal::entityTypeManager()
+    ->getStorage('taxonomy_term')
+    ->loadTree('schools', 0, NULL, TRUE);
+  $schools = [];
+  foreach ($school_terms as $school_term) {
+    $name = $school_term->get('name')->getString();
+    $code = $school_term->get('field_schools_banner_code')->getString();
+    $schools[] = [
+      'code' => $code,
+      'name' => $name,
+    ];
+  }
+  $variables['custom']['schools'] = $schools;
+
+  $legend_layout = $variables['paragraph']->get('field_program_legend_layout')->getString();
+  if ($legend_layout == '50_50') {
+    $variables['custom']['col1_classes'] = "medium-6 columns";
+    $variables['custom']['col2_classes'] = "small-12 medium-6 columns";
+  }
+  elseif ($legend_layout == '30_60') {
+    $variables['custom']['col1_classes'] = "medium-4 columns";
+    $variables['custom']['col2_classes'] = "small-12 medium-8 columns";
+  }
+
+  if ($variables['paragraph']->hasField('field_hide_legend')) {
+    if ($variables['paragraph']->get('field_hide_legend')->getString() !== "1") {
+      $variables['custom']['hide_legend'] = 0;
+    }
+    else {
+      $variables['custom']['hide_legend'] = 1;
+    }
+  }
+
+  // Reset static value for this function variable.
+  drupal_static_reset('_du_academic_programs_card_flyout_override_title');
+  if ($variables['paragraph']->hasField('field_program_card_flyout_title')) {
+    if ($variables['paragraph']->get('field_program_card_flyout_title')->getValue() !== "") {
+      $card_flyout_override_title = $variables['paragraph']->get('field_program_card_flyout_title')->getString();
+      // Set the academic program card flyout override title.
+      _du_academic_programs_card_flyout_override_title($card_flyout_override_title);
+    }
+  }
+}
+
+/**
+ * Implements hook_preprocess_HOOK().
+ */
+function du_academic_programs_preprocess_paragraph__academic_programs_filter(&$variables) {
+
+  $mode = $variables['paragraph']->get('field_program_filter_mode')->getString();
+
+  // Determine list of matching degrees for this filter, depending whether it is
+  // a whitelist / blacklist.
+  $degree_ids = [];
+  $degrees_selected = $variables['paragraph']->get('field_program_filter_by')->getValue();
+  foreach ($degrees_selected as $degree) {
+    $degree_ids[] = $degree['target_id'];
+  }
+
+  if ($mode == 'blacklist') {
+    $query = \Drupal::entityQuery('taxonomy_term')
+      ->condition('vid', 'degree_types');
+    if (!empty($degree_ids)) {
+      $query->condition('tid', $degree_ids, 'NOT IN');
+    }
+    $degree_ids = $query->accessCheck(TRUE)->execute();
+  }
+
+  $degree_terms = \Drupal::entityTypeManager()
+    ->getStorage('taxonomy_term')
+    ->loadMultiple($degree_ids);
+
+  // Strip all but alphanumeric characters from degree types to render degree
+  // filters as CSS classes.
+  $degree_classes = [];
+  foreach ($degree_terms as $term) {
+    $degree_classes[] = preg_replace('/\W/', '-', $term->get('name')->getString());
+  }
+
+  if ($mode == 'graylist' && !empty($degree_classes)) {
+    $gray_class = '';
+    sort($degree_classes);
+    foreach ($degree_classes as $degree_class) {
+      $gray_class .= (empty($gray_class) ? '' : '-') . $degree_class;
+    }
+    $degree_classes = [$gray_class];
+  }
+
+  $variables['custom']['degree_classes'] = $degree_classes;
+}
+
+/**
+ * Implements hook_views_pre_view().
+ *
+ * Populate filters with OR group based on contextual filter value.
+ */
+function du_academic_programs_views_pre_view(ViewExecutable $view, $display_id, array &$args) {
+  if ($view->id() == 'academic_programs') {
+    // If no start date was selected, default to the current date.
+    $filters = $view->display_handler->getOption('filters');
+
+    $search = \Drupal::request()->query->get('search') ?? '';
+    if (!empty($search)) {
+      $filters['title']['value'] = urldecode($search);
+      $filters['field_program_description_1_value']['value'] = urldecode($search);
+      $filters['field_program_description_2_value']['value'] = urldecode($search);
+      $view->display_handler->overrideOption('filters', $filters);
+    }
+  }
+}
+
+/**
+ * Implements hook_views_query_alter().
+ */
+function du_academic_programs_views_query_alter(ViewExecutable $view, QueryPluginBase $query) {
+  if ($view->id() == 'academic_programs') {
+    // Get a new group ID that doesn't conflict with others.
+    $new_gid = max(array_keys($query->where)) + 1;
+    $query->where[$new_gid] = [
+      'conditions' => [],
+      'args' => [],
+      'type' => 'OR',
+    ];
+
+    // Find where conditions that are linked to primary unit or additional unit.
+    // These filters we want to put into a separate group so we can set it to OR
+    // instead of AND. That way the academic programs view can filter on units
+    // that are the primary unit OR additional unit.
+    foreach ($query->where as $gid => $group) {
+      foreach ($group['conditions'] as $cid => $condition) {
+        if (
+          strpos($condition['field'], 'field_program_primary_unit_target_id') !== FALSE
+          || strpos($condition['field'], 'field_program_additional_unit_target_id') !== FALSE
+        ) {
+          $query->where[$new_gid]['conditions'][] = $query->where[$gid]['conditions'][$cid];
+          unset($query->where[$gid]['conditions'][$cid]);
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_views_post_render().
+ *
+ * Inject the special card for searching psychology programs into the programs
+ * view result.
+ */
+function du_academic_programs_views_post_render(ViewExecutable $view, &$output, CachePluginBase $cache) {
+  if ($view->id() == 'academic_programs') {
+    // Omit the hardcoded pyschology card for unit sites.
+    $unit_tid = \Drupal::config('du_unit_site_config.settings')->get('unit_site_term');
+    if ($unit_tid) {
+      return;
+    }
+
+    // Omit the hardcoded pyschology card for search.
+    $search = \Drupal::request()->query->get('search') ?? '';
+    if (!empty($search)) {
+      return;
+    }
+
+    $is_graduate = FALSE;
+    if (!empty($view->args[0]) && is_numeric($view->args[0])) {
+      $level_tid = $view->args[0];
+      $level_term = Term::load($level_tid);
+      if ($level_term->get('field_degree_level_abreviation')->getString() == 'GR') {
+        $is_graduate = TRUE;
+      }
+    }
+
+    if ($is_graduate) {
+      $output['#rows'][0]['#rows'][] = [
+        '#markup' => '<div class="columns ap-item card-list-item psychology" data-filter-name="Psychology" data-filter-school="MANY" style="position: absolute; left: 300px; top: 13817px;">
+                                          <a class="program-card-explore" href="#?search=psychology"></a>
+                                        <div class="cards-list__holder">
+                      <div class="cards-list__content">
+
+                        <p class="academic-card">
+                          Multiple Schools and Divisions                        </p>
+                        <div class="cards-list-module__title">
+                          <h2 class="cards-list-title">
+							                              Compare Psychology programs
+                                                      </h2>
+                        </div>
+
+                        <div class="card-list-bottom">
+
+                                                Multiple Options                        </div>
+                                              </div>
+                      <!-- flyout-->
+                                          </div>
+                  </div>',
+      ];
+    }
+  }
+}
+
+/**
+ * Implements hook_preprocess_HOOK().
+ */
+function du_academic_programs_preprocess_node__academic_program__teaser(&$variables) {
+  $config = \Drupal::config('du_academic_programs.settings');
+
+  $variables['custom']['school_name'] = '';
+  $variables['custom']['college_code'] = '';
+  $variables['custom']['degree_level'] = '';
+  if (!empty($variables['content']['field_program_school_name'][0]['#taxonomy_term'])) {
+    $term = $variables['content']['field_program_school_name'][0]['#taxonomy_term'];
+    $variables['custom']['school_name'] = $term->get('name')->getString();
+    $variables['custom']['college_code'] = $term->get('field_schools_banner_code')->getString();
+  }
+  if (!empty($variables['node']->get('field_program_degree_level')->getString())) {
+    $term = Term::load($variables['node']->get('field_program_degree_level')->getString());
+    $variables['custom']['degree_level'] = $term->get('name')->getString();
+  }
+
+  // Strip all but alphanumeric characters from degree types to render types as
+  // CSS classes. Also, generate automatic links to admissions steps, and plain
+  // text list of degree names.
+  $degree_names = [];
+  $degree_codes = [];
+  $degree_classes = [];
+  $requirements_ctas = [];
+  $program_name = $variables['node']->get('title')->getString();
+  $college_code = $variables['custom']['college_code'];
+  $show_requirements = $variables['node']->get('field_program_display_req')->getString();
+  if (!empty($variables['content']['field_program_degree_type'])) {
+    $types = $variables['content']['field_program_degree_type'];
+    $degree_items = Element::children($types);
+    $item_count = count($degree_items);
+    $url_options = [
+      'attributes' => [
+        'class' => ['btn', 'btn--inline--gold'],
+      ],
+    ];
+
+    foreach ($degree_items as $index) {
+
+      $degree_name = $types[$index]['#taxonomy_term']->get('name')->getString();
+      $degree_code = $types[$index]['#taxonomy_term']->get('field_degree_types_abreviation')->getString();
+      $degree_names[] = $degree_name;
+      $degree_codes[] = $degree_code;
+
+      $degree_classes[] = preg_replace('/\W/', '-', $degree_name);
+
+      // Get all admission steps nodes for this degree.
+      $admission_steps = du_admission_steps_get_admission_steps($degree_code, $college_code, $program_name);
+      if (empty($admission_steps)) {
+        $admission_steps = du_admission_steps_get_admission_steps($degree_code, $college_code, $program_name, TRUE);
+      }
+
+      if (!empty($admission_steps)) {
+        foreach ($admission_steps as $admission_step) {
+          $url = Url::fromUri('internal:/node/' . $admission_step->id(), $url_options);
+          $new_requirement = [
+            '#type' => 'link',
+            '#title' => 'Admissions Requirements',
+            '#url' => $url,
+          ];
+
+          if ($item_count > 1) {
+            $new_requirement['#title'] .= " " . $degree_name;
+          }
+
+          if (count($admission_steps) > 1) {
+            $new_requirement['#title'] .= ' - ' . $admission_step->title->value;
+          }
+
+          if ($show_requirements) {
+            $requirements_ctas[] = $new_requirement;
+          }
+        }
+      }
+    }
+    if (!empty($degree_classes)) {
+      $gray_class = '';
+      $temp_classes = $degree_classes;
+      sort($temp_classes);
+      foreach ($temp_classes as $temp_class) {
+        $gray_class .= (empty($gray_class) ? '' : '-') . $temp_class;
+      }
+      $degree_classes[] = $gray_class;
+    }
+  }
+
+  // Include custom requirement links.
+  if (!empty($variables['content']['field_program_req_links'])) {
+    $reqs = $variables['content']['field_program_req_links'];
+    $req_items = Element::children($reqs);
+    foreach ($req_items as $index) {
+      $new_requirement = $reqs[$index];
+      $attrs = $new_requirement['#url']->getOption('attributes');
+      $attrs['class'] = ['btn', 'btn--inline--gold'];
+      $new_requirement['#url']->setOption('attributes', $attrs);
+      $requirements_ctas[] = $new_requirement;
+    }
+  }
+
+  $variables['custom']['program_name'] = $program_name;
+  $variables['custom']['degree_names'] = $degree_names;
+  $variables['custom']['degree_codes'] = $degree_codes;
+  $variables['custom']['degree_classes'] = $degree_classes;
+  $variables['custom']['requirements_ctas'] = $requirements_ctas;
+
+  // Get and set the card flyout override title value.
+  $variables['custom']['card_flyout_override_title'] = _du_academic_programs_card_flyout_override_title();
+}
+
+/**
+ * Implements hook_preprocess_HOOK().
+ */
+function du_academic_programs_preprocess_node__local_program__teaser(&$variables) {
+  du_academic_programs_preprocess_node__academic_program__teaser($variables);
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
+function du_academic_programs_form_system_site_information_settings_alter(&$form, FormStateInterface $form_state, $form_id) {
+  $config = \Drupal::config('du_academic_programs.settings');
+
+  $form['admission_steps'] = [
+    '#type' => 'details',
+    '#title' => t('Admission Steps Location'),
+    '#open' => TRUE,
+  ];
+
+  $form['admission_steps']['admission_steps_location'] = [
+    '#type' => 'textfield',
+    '#target_type' => 'node',
+    '#title' => t('Admission Steps Location'),
+    '#description' => t('URL to Event List'),
+    '#default_value' => '',
+  ];
+  if (!empty($config->get('admission_steps_location'))) {
+    $form['admission_steps']['admission_steps_location']['#default_value'] = $config->get('admission_steps_location');
+  }
+
+  $form['academic_programs'] = [
+    '#type' => 'details',
+    '#title' => t('Academic Programs'),
+    '#open' => TRUE,
+  ];
+  $form['academic_programs']['academic_programs_list_location'] = [
+    '#type' => 'entity_autocomplete',
+    '#target_type' => 'node',
+    '#title' => t('Academic Programs List Location'),
+    '#description' => t('URL to Academic Programs List.'),
+  ];
+  if (!empty($config->get('academic_programs_list_location'))) {
+    $value = Node::load((int) $config->get('academic_programs_list_location'));
+    if (!empty($value)) {
+      $form['academic_programs']['academic_programs_list_location']['#default_value'] = $value;
+    }
+  }
+
+  $form['#validate'][] = 'du_academic_programs_site_information_settings_form_validate';
+  $form['#submit'][] = 'du_academic_programs_site_information_settings_form_submit';
+
+}
+
+/**
+ * Custom form submission handler for site information form.
+ */
+function du_academic_programs_site_information_settings_form_validate(array &$form, FormStateInterface $form_state) {
+  $values = $form_state->getValues();
+
+  try {
+    $test = Url::fromUri($values['admission_steps_location']);
+  }
+  catch (exception $e) {
+    $form_state->setError($form['admission_steps']['admission_steps_location'], "Please select a valid URI.");
+  }
+}
+
+/**
+ * Custom form submission handler for site information form.
+ */
+function du_academic_programs_site_information_settings_form_submit(array &$form, FormStateInterface $form_state) {
+  $values = $form_state->getValues();
+
+  $config = \Drupal::configFactory()->getEditable('du_academic_programs.settings');
+  $config
+    ->set('admission_steps_location', $values['admission_steps_location'])
+    ->set('academic_programs_list_location', $values['academic_programs_list_location'])
+    ->save();
+}
+
+/**
+ * Get the most recent admission steps for the academic program.
+ *
+ * @param \Drupal\node\NodeInterface $academic_program
+ *   The academic program node.
+ *
+ * @return mixed
+ *   Return the latest admission steps node that has at least one deadline still
+ *   in the future. If all admission steps deadlines are passed, then just
+ *   return the newest one.
+ */
+function _du_academic_programs_get_admission_steps(NodeInterface $academic_program) {
+  $title = $academic_program->title->value;
+  $degree_code = $academic_program->field_program_degree_type->entity->name->value;
+  $college_code = $academic_program->field_program_school_name->entity->field_schools_banner_code->value;
+  $admission_steps = _du_admission_steps_get_all_years($degree_code, $college_code, NULL, NULL, NULL, $title);
+
+  // Loop through each admission steps node starting with the earliest.
+  if (!empty($admission_steps)) {
+    $now = new DrupalDateTime();
+    foreach ($admission_steps as $admission_step) {
+      $fields = [
+        'field_fall_regular_deadline',
+        'field_fall_priority_deadline',
+        'field_fall_priority_deadline_2',
+        'field_fall_priority_deadline_3',
+        'field_fall_priority_deadline_4',
+        'field_fall_priority_deadline_5',
+        'field_winter_regular_deadline',
+        'field_winter_priority_deadline',
+        'field_spring_regular_deadline',
+        'field_spring_priority_deadline_1',
+        'field_spring_priority_deadline_2',
+        'field_spring_priority_deadline_3',
+        'field_summer_regular_deadline',
+        'field_summer_priority_dealine',
+        'field_summer_priority_deadline_2',
+        'field_summer_priority_deadline_3',
+      ];
+      foreach ($fields as $field) {
+        $date = $admission_step->{$field}->value;
+        if (!empty($date)) {
+          $date = new DrupalDateTime($date);
+          if ($date->getTimestamp() + 86400 > $now->getTimestamp()) {
+            return $admission_step;
+          }
+        }
+      }
+    }
+    return array_pop($admission_steps);
+  }
+  return NULL;
+}
+
+/**
+ * Function to get and set a drupal static variable.
+ *
+ * Default value is blank if no value passed in.
+ *
+ * @param int $value
+ *   The value of to set for the variable.
+ *
+ * @return mixed
+ *   Return the value of the drupal static variable card_flyout_override_title.
+ */
+function _du_academic_programs_card_flyout_override_title($value = '') {
+  $card_flyout_override_title = &drupal_static(__FUNCTION__);
+  if (!isset($card_flyout_override_title)) {
+    $card_flyout_override_title = $value;
+  }
+
+  return $card_flyout_override_title;
+}
